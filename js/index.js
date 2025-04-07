@@ -1,5 +1,7 @@
 import { displayDirectoryStructure, getSelectedFiles, formatRepoContents } from './utils.js';
 
+let currentRepoName = ''; // Variable to store the repo name
+
 // Load saved token on page load
 document.addEventListener('DOMContentLoaded', function() {
     lucide.createIcons();
@@ -40,6 +42,8 @@ document.getElementById('repoForm').addEventListener('submit', async function (e
         // Parse repository URL and fetch repository contents
         const { owner, repo, lastString } = parseRepoUrl(repoUrl);
         let refFromUrl = '';
+        currentRepoName = repo; // Store the repo name
+
         let pathFromUrl = '';
 
         if (lastString) {
@@ -61,6 +65,48 @@ document.getElementById('repoForm').addEventListener('submit', async function (e
         displayDirectoryStructure(tree);
         document.getElementById('generateTextButton').style.display = 'flex';
         document.getElementById('downloadZipButton').style.display = 'flex';
+        // --- NEW: Asynchronously fetch/calculate/display token counts ---
+        const fileItems = tree.filter(item => item.type === 'blob');
+        fileItems.forEach(async (item) => {
+            // Clear previous count/error for this specific span before fetching
+            const spanId = `token-count-${item.path.replace(/[^a-zA-Z0-9]/g, '-')}`;
+            const tokenSpan = document.getElementById(spanId);
+            if (tokenSpan) {
+                tokenSpan.textContent = ' (Loading...)'; // Indicate loading
+                tokenSpan.style.color = 'grey'; // Optional: style for loading
+            }
+
+            try {
+                const content = await fetchSingleFileContent(item.url, accessToken);
+                // Ensure tokenizer is loaded (it should be by now, but check is safe)
+                if (typeof GPTTokenizer_cl100k_base !== 'undefined') {
+                    const { encode } = GPTTokenizer_cl100k_base;
+                    const tokenCount = encode(content).length;
+                    // Find the span again (it might have been created dynamically)
+                    const currentTokenSpan = document.getElementById(spanId);
+                    if (currentTokenSpan) {
+                        currentTokenSpan.textContent = ` (Tokens: ${tokenCount})`;
+                        currentTokenSpan.style.color = ''; // Reset color
+                    }
+                } else {
+                    console.warn('GPT Tokenizer not loaded when trying to count tokens for', item.path);
+                     const currentTokenSpan = document.getElementById(spanId);
+                     if (currentTokenSpan) {
+                         currentTokenSpan.textContent = ` (Tokenizer Error)`;
+                         currentTokenSpan.style.color = 'orange';
+                     }
+                }
+            } catch (error) {
+                console.error(`Failed to fetch/process token count for ${item.path}:`, error);
+                const currentTokenSpan = document.getElementById(spanId);
+                if (currentTokenSpan) {
+                    currentTokenSpan.textContent = ` (Fetch Error)`; // Indicate error
+                    currentTokenSpan.style.color = 'red';
+                }
+            }
+        });
+        // --- END NEW ---
+
     } catch (error) {
         outputText.value = `Error fetching repository contents: ${error.message}\n\n` +
             "Please ensure:\n" +
@@ -70,6 +116,23 @@ document.getElementById('repoForm').addEventListener('submit', async function (e
             "4. The specified branch/tag and path (if any) exist in the repository.";
     }
 });
+// --- NEW Helper function to fetch single file content ---
+async function fetchSingleFileContent(url, token) {
+    const headers = {
+        'Accept': 'application/vnd.github.v3.raw'
+    };
+    if (token) {
+        headers['Authorization'] = `token ${token}`;
+    }
+    const response = await fetch(url, { headers });
+    if (!response.ok) {
+        // Throw a specific error to be caught by the caller
+        throw new Error(`Failed to fetch file content. Status: ${response.status}`);
+    }
+    const text = await response.text();
+    return text;
+}
+// --- END NEW ---
 
 // Event listener for generating text file
 document.getElementById('generateTextButton').addEventListener('click', async function () {
@@ -86,6 +149,8 @@ document.getElementById('generateTextButton').addEventListener('click', async fu
             throw new Error('No files selected');
         }
         const fileContents = await fetchFileContents(selectedFiles, accessToken);
+        // Token counts are now updated asynchronously after tree display.
+        // The logic previously here (lines 93-103) has been removed.
         const formattedText = formatRepoContents(fileContents);
         outputText.value = formattedText;
 
@@ -143,7 +208,7 @@ document.getElementById('downloadButton').addEventListener('click', function () 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'prompt.txt';
+    a.download = `${currentRepoName || 'repo'}_prompt.txt`; // New filename using repo name
     a.click();
     URL.revokeObjectURL(url);
 });
@@ -236,7 +301,7 @@ function handleFetchError(response) {
     throw new Error(`Failed to fetch repository data. Status: ${response.status}. Please check your input and try again.`);
 }
 
-// Fetch contents of selected files
+// Fetch contents of selected files (Simplified: No longer calculates tokens here)
 async function fetchFileContents(files, token) {
     const headers = {
         'Accept': 'application/vnd.github.v3.raw'
@@ -245,16 +310,26 @@ async function fetchFileContents(files, token) {
         headers['Authorization'] = `token ${token}`;
     }
     const contents = await Promise.all(files.map(async file => {
-        const response = await fetch(file.url, { headers });
-        if (!response.ok) {
-            handleFetchError(response);
+        try {
+            const response = await fetch(file.url, { headers });
+            if (!response.ok) {
+                // Throw error specific to this file to allow others to proceed if needed,
+                // but we'll catch it and return an error object.
+                throw new Error(`Failed to fetch ${file.path}: Status ${response.status}`);
+            }
+            const text = await response.text();
+            // Return only necessary info for formatRepoContents and createAndDownloadZip
+            return { path: file.path, text: text }; // No tokenCount needed here anymore
+        } catch (error) {
+            console.error(`Error fetching content for ${file.path}:`, error);
+            // Return an object indicating failure for this file
+            // Downstream functions (formatRepoContents, createAndDownloadZip) need to handle this.
+            return { path: file.path, text: `Error fetching content: ${error.message}`, error: true };
         }
-        const text = await response.text();
-        return { url: file.url, path: file.path, text };
     }));
+    // Return all results, including potential errors.
     return contents;
 }
-
 function setupShowMoreInfoButton() {
     const showMoreInfoButton = document.getElementById('showMoreInfo');
     const tokenInfo = document.getElementById('tokenInfo');

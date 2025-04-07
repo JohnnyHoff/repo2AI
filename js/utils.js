@@ -85,6 +85,12 @@ function displayDirectoryStructure(tree) {
         li.appendChild(checkbox);
         appendIcon(li, 'file');
         li.appendChild(document.createTextNode(name));
+        const tokenSpan = document.createElement('span');
+        // Sanitize path for ID: replace non-alphanumeric chars with hyphens
+        const sanitizedPath = item.path.replace(/[^a-zA-Z0-9]/g, '-');
+        tokenSpan.id = `token-count-${sanitizedPath}`;
+        tokenSpan.className = 'ml-2 text-xs text-gray-500'; // Added styling
+        li.appendChild(tokenSpan);
     }
 
     function createCollapseButton() {
