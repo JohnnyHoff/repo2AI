@@ -1,0 +1,10 @@
+.roo/
+node_modules/
+
+# Ignore secrets
+.env
+
+# Ignore log files
+*.log
+
+.roomodes
